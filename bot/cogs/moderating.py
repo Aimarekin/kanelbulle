@@ -1,32 +1,34 @@
 import discord
 from discord.ext import commands
+from utilities import translate, returncfg
 
-class ModCog:
+class ModCog(commands.Cog):
     """ModCog"""
 
     def __init__(self, bot):
         self.bot = bot
 
     @commands.has_permissions(ban_members=True)
+    @commands.bot_has_permissions(ban_members=True)
     @commands.command(name='ban')
-    async def banusr(self, ctx, user, reason: str = "No reason provided"):
-        try:
-            toban = await commands.MemberConverter().convert(ctx, argument=member)
-        except:
-            try:
-                toban = await commands.UserConverter().convert(ctx, argument=member)
-            except:
-                raise commands.BadArgument(message = f"User/Member {user} not found.")
-        await ctx.message.guild.ban(toban, delete_message_days = 7, reason = f"{ctx.author} - {reason}")
-        await ctx.send(f":eyes: {str(toban)} has been banned. oof.")
+    async def banusr(self, ctx, user: discord.Member, *, reason: str = "No reason provided"):
+        if user.top_role > ctx.guild.me.top_role:
+            raise commands.BadArgument(message = f"{user} Has a higher role then me, I'm unable to ban {user} without having a higher role than them.")
+        elif user.top_role > ctx.author.top_role:
+            raise commands.BadArgument(message = f"User/Member {user} has a higher role then you, you need to have a higher role then {user} to be able to ban them.")
+        else:
+            await ctx.message.guild.ban(user, delete_message_days = 7, reason = f"{ctx.author} - {reason}")
+            await ctx.send(f":eyes: {str(user)} has been banned. oof.")
 
     @commands.has_permissions(ban_members=True)
+    @commands.bot_has_permissions(ban_members=True)
     @commands.command(name='unban')
     async def unbanusr(self, ctx, user:discord.User, reason: str = "No reason provided"):
         await ctx.message.guild.unban(tounban, reason = f"{ctx.author} (Unban) - {reason}")
         await ctx.send(f":eyes: {str(toban)} has been unbanned. ")
 
     @commands.has_permissions(ban_members=True)
+    @commands.bot_has_permissions(ban_members=True)
     @commands.command(name='softban')
     async def softbanusr(self, ctx, user, reason: str = "No reason provided"):
         try:
@@ -41,10 +43,18 @@ class ModCog:
         await ctx.send(f":eyes: {str(toban)} has been soft banned.\nThis means they have been kicked, with messages less than 7 days old deleted.")
 
     @commands.has_permissions(kick_members=True)
+    @commands.bot_has_permissions(kick_members=True)
     @commands.command(name='kick')
-    async def kickusr(self, ctx, *, member: discord.Member, reason: str = "No reason provided"):
+    async def kickusr(self, ctx, member: discord.Member, *, reason: str = "No reason provided"):
+        guildlang = "en"
+        guildsettings = await returncfg.fetchguildconfig(ctx.guild.id)
+        try:
+            guildlang = guildsettings["lang"]
+        except:
+            pass
         await ctx.message.guild.kick(member, reason=f"{ctx.author} (Softban) - {reason}")
-        await ctx.send(f":eyes: {str(member)} has been kicked. oof.")
+        returntousr = translate.translate(lang=guildlang, string="kick", user=user)
+        await ctx.send(returntousr)
 
     @commands.command(name='lock')
     @commands.has_permissions(manage_roles=True)
@@ -83,6 +93,8 @@ class ModCog:
         if ctx.invoked_subcommand is None:
             await ctx.send('⚠️ Thats not a valid command! ⚠️')
 
+    @commands.has_permissions(manage_messages=True)
+    @commands.bot_has_permissions(manage_messages=True)
     @clean.command()
     async def all(self, ctx, mcount: int):
         await ctx.channel.purge(limit=mcount)

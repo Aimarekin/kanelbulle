@@ -3,22 +3,30 @@
 import discord
 from discord.ext import commands
 import datetime, re
+from datadog import initialize
+from datadog import api
+from datadog import statsd
 import json, asyncio
 import copy
 import logging
 import traceback
 import aiohttp
 import sys
-import sentry_sdk
 import json
 import subprocess
 import requests
+from utilities import translate, returncfg
 import sys
 
 with open("config.json") as dataf:
     returnconfig = json.load(dataf)
 
-sentry_sdk.init(returnconfig['sentry_dsn'])
+options = {
+    'api_key':returnconfig['datadog_api_key'],
+    'app_key':returnconfig['datadog_app_key']
+}
+
+initialize(**options)
 
 def get_prefix(bot, message):
 
@@ -31,10 +39,12 @@ def get_prefix(bot, message):
     return commands.when_mentioned_or(*prefixes)(bot, message)
 
 
-initial_extensions = ['cogs.simple',
+initial_extensions = ['cogs.core',
                       'cogs.admin',
                       'cogs.moderating',
-                      'cogs.fortnite']
+                      'cogs.fortnite',
+                      'cogs.random',
+                      'cogs.apex']
 
 log_channel = None
 
@@ -51,55 +61,51 @@ for extension in initial_extensions:
 @bot.event
 async def on_ready():
     print(bot.user.name)
-    print('Signed into bot user.')
+    print('READY event received.')
+    title = "READY event received - Kanelbulle"
+    text = 'The bot received a READY event from Discords API.'
+    tags = ['version:1', 'application:bot']
+    api.Event.create(title=title, text=text, tags=tags)
     statusdiscord = discord.Game("Kanelbulle v.1.1.0")
     await bot.change_presence(status=discord.Status.online, activity=statusdiscord)
+    global aiohttpsession
+    aiohttpsession = aiohttp.ClientSession()
+    url = "https://discord.bots.gg/api/v1/bots/" + returnconfig['bot_id'] + "/stats"
+    headers = {"Authorization": returnconfig['discord_bots_token']}
+    payload = {'guildCount': (len(bot.guilds))}
+    await aiohttpsession.post(url, data=payload, headers=headers)
     global log_channel
     log_channel = bot.get_channel(returnconfig["log_channel"])
     setattr(bot, "log_channel", log_channel)
-    with open("whitelist.json") as whitelistf:
-        server_whitelist = json.load(whitelistf)
-    for guild in bot.guilds:
-        if not guild.id in server_whitelist:
-            print(f"Kanelbulle joined a non-whitelisted server, {guild.name} ({guild.id}). Kanelbulle is leaving.")
-            await log_channel.send(f"Kanelbulle joined a non-whitelisted server, {guild.name} ({guild.id}). Kanelbulle is leaving.")
-            await guild.leave()
 
 @bot.event
 async def on_guild_join(guild):
-    with open("whitelist.json") as whitelistf:
-        server_whitelist = json.load(whitelistf)
-    if not guild.id in server_whitelist:
-        print(f"Kanelbulle joined a non-whitelisted server, {guild.name} ({guild.id}). Kanelbulle is leaving.")
-        await log_channel.send(f"Kanelbulle joined a non-whitelisted server, {guild.name} ({guild.id}). Kanelbulle is leaving.")
-    else:
-        if guild.system_channel:
-            try:
-                await guild.system_channel.send("Hi! I'm Kanelbulle, thank you for adding me! My prefix is `<.`")
-            except discord.Forbidden:
-                pass
+    url = "https://discord.bots.gg/api/v1/bots/" + returnconfig['bot_id'] + "/stats"
+    headers = {"Authorization": returnconfig['discord_bots_token']}
+    payload = {'guildCount': (len(bot.guilds))}
+    await aiohttpsession.post(url, data=payload, headers=headers)
+    title = f"New guild added: {guild.name}"
+    text = f"Guild ID: {guild.id}, Guild Region: {guild.region}, Member Count: {guild.member_count} and the server owners ID: {guild.owner_id}"
+    tags = ['version:1', 'application:bot']
+    serverjoinembed = discord.Embed(title="A new server has added Kanelbulle!", description="YAAAAAAAAAAY!", color=0xedab49)
+    serverjoinembed.add_field(name="Server name", value=(guild.name), inline=False)
+    serverjoinembed.add_field(name="Server region", value=(guild.region), inline=False)
+    serverjoinembed.add_field(name="Server ID", value=(guild.id), inline=False)
+    serverjoinembed.add_field(name="Servers member count", value=(guild.member_count), inline=False)
+    serverjoinembed.add_field(name="Server owners ID", value=(guild.owner_id), inline=False)
+    await log_channel.send(embed=serverjoinembed)
+    if guild.system_channel:
+        try:
+            await guild.system_channel.send("Hi! I'm Kanelbulle, thank you for adding me! My prefix is `<.`")
+        except discord.Forbidden:
+            pass
 
-
-class DiscordBotsOrgAPI:
-    """Handles interactions with the discordbots.org API"""
-
-    def __init__(self, bot):
-        self.bot = bot
-        self.token = returnconfig['dbltoken']
-        self.dblpy = dbl.Client(self.bot, self.token)
-        self.bot.loop.create_task(self.update_stats())
-
-    async def update_stats(self):
-        """This function runs every 30 minutes to automatically update your server count"""
-
-        while True:
-            logger.info('Sending server count of to DBL Weeeeee!')
-            try:
-                await self.dblpy.post_server_count()
-                logger.info('posted server count ({})'.format(len(self.bot.guilds)))
-            except Exception as e:
-                logger.exception('Failed to post server count\n{}: {}'.format(type(e).__name__, e))
-            await asyncio.sleep(1800)
+@bot.event
+async def on_guild_remove(guild):
+    url = "https://discord.bots.gg/api/v1/bots/" + returnconfig['bot_id'] + "/stats"
+    headers = {"Authorization": returnconfig['discord_bots_token']}
+    payload = {'guildCount': (len(bot.guilds))}
+    await aiohttpsession.post(url, data=payload, headers=headers)
 
 @bot.event
 async def on_message(ctx):
@@ -125,34 +131,51 @@ async def on_message(ctx):
     if context.valid:
         if isinstance(ctx.channel, discord.TextChannel):
             if not ctx.channel.permissions_for(ctx.channel.guild.me).send_messages:
-                try:
-                    await ctx.author.send(f"*Houston, we have a problem!*\nYou tried to use `{ctx.content}` in {ctx.channel.mention}, but I don't have message permissions there.\nGive me perms and try again!")
-                except discord.Forbidden:
-                    pass # DMs disabled!
+                pass
             else:
                 await bot.invoke(context) # Performance improvement
 
 @bot.event
 async def on_command_error(ctx: commands.Context, error):
+    guildlang = "en"
+    guildsettings = await returncfg.fetchguildconfig(ctx.guild.id)
+    try:
+        guildlang = guildsettings["lang"]
+    except:
+        pass
     if isinstance(error, commands.NoPrivateMessage):
-        await ctx.send("This command can not be used through DMs!")
+        error_string = translate.translate(lang=guildlang, string="fail_noprivatemessage")
+        await ctx.send(error_string)
+        statsd.increment('bot.errorNoPrivateMessage')
     elif isinstance(error, commands.BotMissingPermissions):
+        error_string = translate.translate(lang=guildlang, string="fail_MissingPermissions", ctx=ctx)
         await ctx.send(f"Welp, this is awkward.\nI do not have enough permissions to run {ctx.command}!```error```")
+        statsd.increment('bot.errorBotMissingPermissions')
     elif isinstance(error, commands.DisabledCommand):
-        await ctx.send("This command is currently disabled and can not be used.")
+        error_string = translate.translate(lang=guildlang, string="fail_DisabledCommand")
+        await ctx.send(error_string)
+        statsd.increment('bot.errorDisabledCommand')
     elif isinstance(error, commands.CheckFailure):
-        await ctx.send(":lock: You don't have enough permissions to run this command!")
+        error_string = translate.translate(lang=guildlang, string="fail_CheckFailure")
+        await ctx.send(error_string)
+        statsd.increment('bot.errorCheckFailure')
     elif isinstance(error, commands.CommandOnCooldown):
-        await ctx.send(f"Woah there, you're too *hyped!*\nYou're on a cooldown.```{error}```")
+        error_string = translate.translate(lang=guildlang, string="fail_CommandOnCooldown", error=error)
+        await ctx.send(error_string)
+        statsd.increment('bot.errorCommandOnCooldown')
     elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(f"You are missing required arguments!\n{error}`\n\nCommand usage: `<.{ctx.command.signature}`")
+        error_string = translate.translate(lang=guildlang, string="fail_MissingRequiredArgument", error=error, ctx=ctx)
+        await ctx.send(error_string)
+        statsd.increment('bot.errorCommandOnCooldown')
     elif isinstance(error, commands.BadArgument):
-        await ctx.send(f"One of your arguments is incorrect!\n`{error}`\n\nCommand usage: <.{ctx.command.signature}`")
+        error_string = translate.translate(lang=guildlang, string="fail_BadArgument", error=error, ctx=ctx)
+        await ctx.send(error_string)
+        statsd.increment('bot.errorBadArgument')
     elif isinstance(error, commands.CommandNotFound):
         return
 
     else:
-        await ctx.send(":rotating_light: Uh-Oh! An error just ocurred! The devs are already on it. Sorry my fren! :rotating_light:")
+        await ctx.send(f":rotating_light: Uh-Oh! An error just ocurred! The devs are already on it. Sorry my fren! :rotating_light:")
         if isinstance(ctx.channel, discord.DMChannel):
             used_in = f"DM {ctx.channel.id}"
         else:
@@ -195,11 +218,21 @@ Event timestamp (UTC): `{datetime.datetime.utcnow()}`""", embed = traceback_embe
 
 @bot.command()
 async def info(ctx):
+    guildlang = "en"
+    guildsettings = await returncfg.fetchguildconfig(ctx.guild.id)
+    try:
+        guildlang = guildsettings["lang"]
+    except:
+        pass
     embedinfo = discord.Embed(title="Kanelbulle Info", description="Some very neat info!", color=0xeee657)
-    embedinfo.add_field(name="Author", value="@tristanfarkas#0001")
-    embedinfo.add_field(name="Github repository", value="https://github.com/trilleplay/kanelbulle/")
-    embedinfo.add_field(name="Guild count", value=f"{len(bot.guilds)}")
-    embedinfo.add_field(name="Invite", value="Right now Kanelbulle is private due to resource limitations. If you would like to apply/request access, you may do so over at my discord server: https://discord.gg/FBMrcYM in the #invite-kanelbulle channel. ")
+    author_string = translate.translate(lang=guildlang, string="author")
+    embedinfo.add_field(name=author_string, value="@tristanfarkas#0001")
+    repo_string = translate.translate(lang=guildlang, string="repo")
+    embedinfo.add_field(name=repo_string, value="https://github.com/trilleplay/kanelbulle/")
+    guildcount_string = translate.translate(lang=guildlang, string="guild_count")
+    embedinfo.add_field(name=guildcount_string, value=f"{len(bot.guilds)}")
+    invite_string = translate.translate(lang=guildlang, string="invite")
+    embedinfo.add_field(name=invite_string, value="Right now Kanelbulle is private due to resource limitations. If you would like to apply/request access, you may do so over at my discord server: https://discord.gg/FBMrcYM in the #invite-kanelbulle channel. ")
     embedinfo.set_image(url="https://trilleplay.github.io/kanelbulle/Kanelbulle%20Full_Logo.png")
 
     await ctx.send(embed=embedinfo)
@@ -208,16 +241,30 @@ bot.remove_command('help')
 
 @bot.command()
 async def help(ctx):
-    embed = discord.Embed(title="Kanelbulle Docs", description="Made with <3 by Tristan Farkas.", color=0xedab49)
+    guildlang = "en"
+    guildsettings = await returncfg.fetchguildconfig(ctx.guild.id)
+    try:
+        guildlang = guildsettings["lang"]
+    except:
+        pass
+    madewith_string = translate.translate(lang=guildlang, string="helpc_headerdesc")
+    embed = discord.Embed(title="Kanelbulle Docs", description=madewith_string, color=0xedab49)
 
-    embed.add_field(name="Docs", value="The docs for Kanelbulle commands is available at: https://kanelbulle.gitbook.io/kanelbulle/useful-commands.", inline=False)
+    embed.add_field(name="Docs", value="The docs for Kanelbulle commands is available at: https://docs.kanelbulle.farkasdev.com/commands", inline=False)
 
     await ctx.send(embed=embed)
 
 @bot.command()
 async def ping(ctx):
+    guildlang = "en"
+    guildsettings = await returncfg.fetchguildconfig(ctx.guild.id)
+    try:
+        guildlang = guildsettings["lang"]
+    except:
+        pass
+    ping_description = translate.translate(lang=guildlang, string="ping_desc")
     latency = bot.latency*1000
-    embedping = discord.Embed(title="Ping!", description="Ping the bot!", color=0xedab49)
+    embedping = discord.Embed(title="Ping!", description=ping_description, color=0xedab49)
 
     embedping.add_field(name="🏓 Latency", value=(latency), inline=False)
 

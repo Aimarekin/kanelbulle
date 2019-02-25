@@ -1,5 +1,9 @@
 git+https://github.com/Rapptz/discord.py@rewrite#egg=discord.py[voice]
 pyyaml
 wikipedia
-dblpy
+aiohttp
 sentry-sdk
+redis==3.0.1
+asyncpg==0.18.3
+datadog
+cachetools
